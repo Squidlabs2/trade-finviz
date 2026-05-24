@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+from urllib.error import HTTPError, URLError
 
 import pandas as pd
 
@@ -326,6 +327,10 @@ def run_weekly_scan_command(args: argparse.Namespace) -> None:
     )
 
     if args.use_finviz_sector_screener:
+        if args.refresh_data:
+            failures = refresh_symbol_data(SPDR_SECTOR_SYMBOLS, args.data_dir, args.fetch_start)
+            for failure in failures:
+                print(f"Data refresh warning: {failure}")
         sector_prices = {
             symbol: load_price_csv(Path(args.data_dir) / f"{symbol}.csv")
             for symbol in SPDR_SECTOR_SYMBOLS
@@ -339,16 +344,32 @@ def run_weekly_scan_command(args: argparse.Namespace) -> None:
             if args.finviz_rsi_mode == "both"
             else [args.finviz_rsi_mode]
         )
-        scan_parts = [
-            fetch_finviz_sector_candidates(
-                sector_signal["selected_symbols"],
-                max_results_per_sector=args.max_results,
-                rsi_mode=rsi_mode,
+        try:
+            scan_parts = [
+                fetch_finviz_sector_candidates(
+                    sector_signal["selected_symbols"],
+                    max_results_per_sector=args.max_results,
+                    rsi_mode=rsi_mode,
+                )
+                for rsi_mode in rsi_modes
+            ]
+            scan = pd.concat(scan_parts, ignore_index=True) if scan_parts else pd.DataFrame()
+            universe = (
+                scan[["symbol", "sector_etf"]].copy()
+                if not scan.empty
+                else pd.DataFrame(columns=["symbol", "sector_etf"])
             )
-            for rsi_mode in rsi_modes
-        ]
-        scan = pd.concat(scan_parts, ignore_index=True) if scan_parts else pd.DataFrame()
-        universe = scan[["symbol", "sector_etf"]].copy() if not scan.empty else pd.DataFrame(columns=["symbol", "sector_etf"])
+        except (HTTPError, URLError) as exc:
+            print(f"Finviz screen unavailable on this host: {exc}. Falling back to sector holdings.")
+            universe = fetch_sector_holdings_universe(
+                sector_signal["selected_symbols"],
+                max_holdings_per_sector=args.max_holdings_per_sector,
+            )
+            if args.refresh_data:
+                failures = refresh_symbol_data(sorted(universe["symbol"].tolist()), args.data_dir, args.fetch_start)
+                for failure in failures:
+                    print(f"Data refresh warning: {failure}")
+            scan, _ = run_momentum_scan(universe, args.data_dir, scan_config)
     elif args.use_sector_holdings:
         sector_prices = {
             symbol: load_price_csv(Path(args.data_dir) / f"{symbol}.csv")
