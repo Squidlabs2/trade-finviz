@@ -1,0 +1,9 @@
+[Unit]
+Description=Run weekly market momentum scan after Friday close
+
+[Timer]
+OnCalendar=Fri *-*-* 16:15:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

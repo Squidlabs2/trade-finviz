@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trade-strategy"
+version = "0.1.0"
+description = "Research scaffold for market trading strategies"
+requires-python = ">=3.9"
+dependencies = [
+    "pandas>=1.5,<3",
+    "numpy>=1.23,<3",
+    "yfinance>=0.2,<1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7,<9"]
+
+[tool.setuptools.packages.find]
+where = ["src"]

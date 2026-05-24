@@ -1,0 +1,7 @@
+[Unit]
+Description=Weekly market momentum scan
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/trade
+ExecStart=/path/to/trade/scripts/weekly_scan.sh
