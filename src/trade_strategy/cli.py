@@ -29,6 +29,7 @@ from trade_strategy.scanner import (
     format_scan_message,
     format_sector_flow_message,
     format_stock_candidates_message,
+    format_stock_candidates_ntfy_message,
     fetch_sector_holdings_universe,
     fetch_finviz_sector_candidates,
     load_holdings,
@@ -453,8 +454,17 @@ def run_weekly_scan_command(args: argparse.Namespace) -> None:
             raise ValueError("Set NTFY_URL and NTFY_TOPIC, or pass --ntfy-url and --ntfy-topic")
         send_ntfy_message(ntfy_config, "Weekly sector flow", sector_message)
         print(f"Sent sector-flow ntfy notification to {ntfy_config.endpoint}")
-        send_ntfy_message(ntfy_config, "Weekly stock candidates", stock_message)
-        print(f"Sent stock-candidates ntfy notification to {ntfy_config.endpoint}")
+        for sector_etf in sector_signal["selected_symbols"]:
+            stock_message = format_stock_candidates_ntfy_message(
+                scan,
+                sector_signal,
+                args.max_results,
+                holdings,
+                leading_sector_stocks_only=args.leading_sector_stocks_only,
+                sector_etf=sector_etf,
+            )
+            send_ntfy_message(ntfy_config, f"Weekly stock candidates - {sector_etf}", stock_message)
+            print(f"Sent stock-candidates ntfy notification for {sector_etf} to {ntfy_config.endpoint}")
 
 
 def _build_ntfy_config(args: argparse.Namespace) -> NtfyConfig | None:

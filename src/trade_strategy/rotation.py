@@ -22,6 +22,20 @@ SPDR_SECTOR_SYMBOLS = [
     "XLY",
 ]
 
+SPDR_SECTOR_NAMES = {
+    "XLB": "Materials",
+    "XLC": "Communication Services",
+    "XLE": "Energy",
+    "XLF": "Financials",
+    "XLI": "Industrials",
+    "XLK": "Technology",
+    "XLP": "Consumer Staples",
+    "XLRE": "Real Estate",
+    "XLU": "Utilities",
+    "XLV": "Health Care",
+    "XLY": "Consumer Discretionary",
+}
+
 
 @dataclass(frozen=True)
 class SectorRotationConfig:
@@ -155,7 +169,8 @@ def latest_sector_signal(
 
     signal_date = scores.index[-1]
     score_row = scores.iloc[-1].dropna()
-    selected_symbols = [str(symbol) for symbol in score_row.sort_values(ascending=False).head(config.top_n).index]
+    ranked = score_row.sort_values(ascending=False)
+    selected_symbols = [str(symbol) for symbol in ranked.head(config.top_n).index]
     exposure_index = exposures.index.searchsorted(signal_date, side="right") - 1
     if exposure_index < 0:
         raise ValueError("Not enough daily data to evaluate latest sector exposure")
@@ -169,10 +184,17 @@ def latest_sector_signal(
         "signal_date": signal_date,
         "selected_symbol": selected_symbols[0],
         "selected_symbols": selected_symbols,
+        "flow_rank": {symbol: int(rank + 1) for rank, symbol in enumerate(ranked.index.astype(str))},
         "score": float(score_row[selected_symbols[0]]),
         "target_exposure": float(sum(selected_exposures.values())),
         "target_exposures": selected_exposures,
     }
+
+
+def format_sector_symbol(symbol: str) -> str:
+    symbol = symbol.upper()
+    name = SPDR_SECTOR_NAMES.get(symbol)
+    return f"{symbol} - {name}" if name else symbol
 
 
 def _build_unshifted_trend_exposures(

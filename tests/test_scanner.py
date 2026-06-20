@@ -158,10 +158,14 @@ def test_sector_and_stock_messages_are_separate():
     )
 
     assert "Leading sector flow" in sector_message
+    assert "XLK - Technology" in sector_message
+    assert "XLE - Energy" in sector_message
     assert "Sector exposure" in sector_message
     assert "BUY" not in sector_message
+    assert "Stock scan for sector flow: XLK - Technology, XLE - Energy, XLV - Health Care" in stock_message
     assert "Stock buy candidates in leading sectors" in stock_message
-    assert "BUY" in stock_message
+    assert "XLK - Technology:" in stock_message
+    assert "BUY (XLK - Technology)" in stock_message
 
 
 def test_parse_sector_holdings_xlsx_extracts_tickers(tmp_path):
@@ -268,7 +272,8 @@ def test_stock_candidates_message_groups_finviz_rsi_screens():
         leading_sector_stocks_only=True,
     )
 
+    assert "XLV - Health Care:" in message
     assert "RSI not over 60:" in message
-    assert "EARLY XLV" in message
+    assert "EARLY (XLV - Health Care)" in message
     assert "RSI over 60:" in message
-    assert "STRONG XLV" in message
+    assert "STRONG (XLV - Health Care)" in message

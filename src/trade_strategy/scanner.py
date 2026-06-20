@@ -13,7 +13,12 @@ import pandas as pd
 
 from trade_strategy.data import fetch_yahoo, load_price_csv, save_price_csv
 from trade_strategy.indicators import simple_moving_average
-from trade_strategy.rotation import SPDR_SECTOR_SYMBOLS, SectorRotationConfig, latest_sector_signal
+from trade_strategy.rotation import (
+    SPDR_SECTOR_SYMBOLS,
+    SectorRotationConfig,
+    format_sector_symbol,
+    latest_sector_signal,
+)
 
 
 SSGA_HOLDINGS_URL_TEMPLATE = (
@@ -478,17 +483,28 @@ def format_scan_message(
 
 
 def format_sector_flow_message(sector_signal: dict[str, object]) -> str:
-    leading = ",".join(sector_signal["selected_symbols"])
+    leading = ", ".join(format_sector_symbol(symbol) for symbol in sector_signal["selected_symbols"])
     lines = [
         f"Leading sector flow: {leading}",
         f"Signal date: {sector_signal['signal_date'].date()}",
     ]
+    flow_rank = sector_signal.get("flow_rank", {})
+    if flow_rank:
+        lines.append("")
+        lines.append("Flow rank:")
+        for symbol in sector_signal["selected_symbols"]:
+            rank = flow_rank.get(symbol)
+            if rank is not None:
+                lines.append(f"{format_sector_symbol(symbol)}: #{rank}")
     target_exposures = sector_signal.get("target_exposures", {})
     if target_exposures:
         lines.append("")
         lines.append("Sector exposure:")
         for symbol, exposure in target_exposures.items():
-            lines.append(f"{symbol}: {exposure:.2%}")
+            if exposure <= 0:
+                lines.append(f"{format_sector_symbol(symbol)}: 0.00% (trend filter off)")
+            else:
+                lines.append(f"{format_sector_symbol(symbol)}: {exposure:.2%}")
     return "\n".join(lines)
 
 
@@ -503,7 +519,7 @@ def format_stock_candidates_message(
     held_symbols = set() if holdings is None or holdings.empty else set(holdings["symbol"].tolist())
     exit_signal = scan["exit_signal"].eq(True)
     exits = scan.loc[scan["symbol"].isin(held_symbols) & exit_signal]
-    leading = ",".join(sector_signal["selected_symbols"])
+    leading = ", ".join(format_sector_symbol(symbol) for symbol in sector_signal["selected_symbols"])
     lines = [
         f"Stock scan for sector flow: {leading}",
     ]
@@ -533,29 +549,136 @@ def format_stock_candidates_message(
         lines.append("Stock buy candidates in leading sectors:")
     else:
         lines.append("Buy candidates:")
-    if "screen_name" in candidates.columns:
-        for screen_name, screen_rows in candidates.groupby("screen_name", sort=False):
-            lines.append(f"{screen_name}:")
-            for _, row in screen_rows.head(max_results).iterrows():
-                lines.append(_format_candidate_line(row))
-    else:
-        for _, row in candidates.head(max_results).iterrows():
-            lines.append(_format_candidate_line(row))
+    sector_order = list(sector_signal.get("selected_symbols", []))
+    candidates = _organize_candidates_by_sector(candidates, sector_order)
+    for sector_name, sector_rows in _group_rows_by_sector(candidates, sector_order).items():
+        lines.append(f"{sector_name}:")
+        if "screen_name" in sector_rows.columns:
+            for screen_name, screen_rows in sector_rows.groupby("screen_name", sort=False):
+                lines.append(f"  {screen_name}:")
+                for _, row in screen_rows.head(max_results).iterrows():
+                    lines.append(f"    {_format_candidate_line(row)}")
+        else:
+            for _, row in sector_rows.head(max_results).iterrows():
+                lines.append(f"  {_format_candidate_line(row)}")
 
     lines.append("")
     lines.append("Exit rule: close below 50SMA or 20-day momentum turns negative.")
     return "\n".join(lines)
 
 
+def format_stock_candidates_ntfy_message(
+    scan: pd.DataFrame,
+    sector_signal: dict[str, object],
+    max_results: int,
+    holdings: pd.DataFrame | None = None,
+    leading_sector_stocks_only: bool = False,
+    sector_etf: str | None = None,
+) -> str:
+    candidates = scan.loc[scan["status"].eq("candidate")]
+    if sector_etf:
+        sector_etf = sector_etf.upper()
+        candidates = candidates.loc[candidates["sector_etf"].fillna("").astype(str).str.upper().eq(sector_etf)]
+    held_symbols = set() if holdings is None or holdings.empty else set(holdings["symbol"].tolist())
+    exit_signal = scan["exit_signal"].eq(True)
+    if sector_etf:
+        exit_signal = exit_signal & scan["sector_etf"].fillna("").astype(str).str.upper().eq(sector_etf)
+    exits = scan.loc[scan["symbol"].isin(held_symbols) & exit_signal]
+    sector_order = list(sector_signal.get("selected_symbols", []))
+    if sector_etf:
+        sector_order = [symbol for symbol in sector_order if symbol.upper() == sector_etf]
+    candidates = _organize_candidates_by_sector(candidates, sector_order)
+
+    lines = ["Stock candidates by sector"]
+    if not exits.empty:
+        lines.append("")
+        lines.append("Exit candidates")
+        for _, row in exits.iterrows():
+            lines.append(
+                f"  {row['symbol']}: close {row['close']:.2f}, "
+                f"50SMA {row['sma_50']:.2f}, 20d mom {row['momentum']:.2%}"
+            )
+
+    if candidates.empty:
+        lines.append("")
+        lines.append("No stock buy candidates passed the rules.")
+        return "\n".join(lines)
+
+    lines.append("")
+    for sector_name, sector_rows in _group_rows_by_sector(candidates, sector_order).items():
+        lines.append(sector_name)
+        if "screen_name" in sector_rows.columns:
+            for screen_name, screen_rows in sector_rows.groupby("screen_name", sort=False):
+                lines.append(f"  {screen_name} ({len(screen_rows)})")
+                for _, row in screen_rows.iterrows():
+                    lines.append(f"    {_format_ntfy_candidate_line(row)}")
+        else:
+            lines.append(f"  Candidates ({len(sector_rows)})")
+            for _, row in sector_rows.iterrows():
+                lines.append(f"    {_format_ntfy_candidate_line(row)}")
+
+    if leading_sector_stocks_only:
+        lines.append("")
+        lines.append("Filtered to leading sectors only.")
+
+    return "\n".join(lines)
+
+
 def _format_candidate_line(row: pd.Series) -> str:
-    sector = f" {row['sector_etf']}" if row.get("sector_etf") else ""
+    sector_name = format_sector_symbol(str(row["sector_etf"])) if row.get("sector_etf") else ""
     leader = " sector-flow" if bool(row.get("sector_leader")) else ""
     if "volume" in row and pd.notna(row.get("volume")):
         return (
-            f"{row['symbol']}{sector}: close {row['close']:.2f}, "
+            f"{row['symbol']}"
+            f"{f' ({sector_name})' if sector_name else ''}: close {row['close']:.2f}, "
             f"volume {int(row['volume']):,}{leader}"
         )
     return (
-        f"{row['symbol']}{sector}: close {row['close']:.2f}, "
+        f"{row['symbol']}"
+        f"{f' ({sector_name})' if sector_name else ''}: close {row['close']:.2f}, "
         f"vol {row['volume_ratio']:.2f}x, 20d mom {row['momentum']:.2%}{leader}"
     )
+
+
+def _format_ntfy_candidate_line(row: pd.Series) -> str:
+    return f"{row['symbol']} - close {row['close']:.2f}, volume {int(row['volume']):,}"
+
+
+def _organize_candidates_by_sector(candidates: pd.DataFrame, sector_order: list[str] | None = None) -> pd.DataFrame:
+    if candidates.empty or "sector_etf" not in candidates.columns:
+        return candidates
+    ordered = candidates.copy()
+    sector_order = [symbol.upper() for symbol in (sector_order or [])]
+    sector_rank_map = {symbol: rank for rank, symbol in enumerate(sector_order)}
+    ordered["_sector_rank"] = ordered["sector_etf"].fillna("").astype(str).str.upper().map(
+        lambda symbol: sector_rank_map.get(symbol, len(sector_rank_map))
+    )
+    sort_columns = ["_sector_rank"]
+    ascending = [True]
+    for column in ("score", "volume_ratio", "momentum", "volume", "close"):
+        if column in ordered.columns:
+            sort_columns.append(column)
+            ascending.append(False)
+    return ordered.sort_values(
+        sort_columns,
+        ascending=ascending,
+    )
+
+
+def _group_rows_by_sector(candidates: pd.DataFrame, sector_order: list[str] | None = None) -> dict[str, pd.DataFrame]:
+    grouped = {}
+    if candidates.empty:
+        return grouped
+    sector_order = [symbol.upper() for symbol in (sector_order or [])]
+    seen = set()
+    for sector_symbol in sector_order:
+        sector_rows = candidates.loc[candidates["sector_etf"].fillna("").astype(str).str.upper().eq(sector_symbol)]
+        if not sector_rows.empty:
+            grouped[format_sector_symbol(sector_symbol)] = sector_rows
+            seen.add(sector_symbol)
+    for sector_etf, sector_rows in candidates.groupby("sector_etf", sort=False):
+        sector_symbol = str(sector_etf).upper()
+        if sector_symbol in seen:
+            continue
+        grouped[format_sector_symbol(sector_symbol)] = sector_rows
+    return grouped
